@@ -4,3 +4,4 @@ uvicorn
 gunicorn
 python-multipart
 google-generativeai
+cadquery==2.4.0
