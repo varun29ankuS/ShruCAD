@@ -1,11 +1,12 @@
-# main.py - The Final "Extractor" Architecture
+# main.py - The Hybrid Vision Pipeline
 
 import os
 import shutil
 import base64
 import cv2
 import numpy as np
-import json # NEW: To parse the AI's JSON output
+import json
+import pytesseract # NEW: The OCR Scribe
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,71 +32,84 @@ TEMP_UPLOAD_DIR = "temp_uploads"
 async def startup_event():
     os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
 
-def preprocess_image(image_path: str) -> str:
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if np.mean(img) > 127:
-        img = cv2.bitwise_not(img)
-    _, thresh = cv2.threshold(img, 50, 255, cv2.THRESH_BINARY)
-    processed_path = os.path.join(TEMP_UPLOAD_DIR, "processed_" + os.path.basename(image_path))
-    cv2.imwrite(processed_path, thresh)
-    return processed_path
-
 @app.post("/generate")
 async def generate_model(file: UploadFile = File(...)):
     if not model:
         return JSONResponse(status_code=500, content={"message": "Google AI client not initialized."})
 
     try:
-        original_file_path = os.path.join(TEMP_UPLOAD_DIR, file.filename)
-        with open(original_file_path, "wb") as buffer:
+        file_path = os.path.join(TEMP_UPLOAD_DIR, file.filename)
+        with open(file_path, "wb") as buffer:
             buffer.write(await file.read())
             
-        processed_image_path = preprocess_image(original_file_path)
-        image_file = genai.upload_file(path=processed_image_path)
+        # --- STAGE 1: SPECIALIST ANALYSIS ---
+        img = cv2.imread(file_path)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+
+        # Specialist 1: Shape Detector (finds circles)
+        detected_circles = []
+        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, 20, param1=50, param2=30, minRadius=5, maxRadius=100)
+        if circles is not None:
+            circles = np.uint16(np.around(circles))
+            for i in circles[0, :]:
+                detected_circles.append({"center": [int(i[0]), int(i[1])], "radius": int(i[2])})
         
-        # --- NEW "EXTRACTOR" PROMPT ---
-        prompt = """
-        You are a computer vision data extractor. Your task is to analyze a pure black-and-white image and extract the coordinates of its main silhouette.
+        # Specialist 2: Text Scribe (OCR)
+        ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+        text_annotations = []
+        for i in range(len(ocr_data['text'])):
+            if int(ocr_data['conf'][i]) > 60: # Confidence threshold
+                text = ocr_data['text'][i].strip()
+                if text:
+                    x, y, w, h = ocr_data['left'][i], ocr_data['top'][i], ocr_data['width'][i], ocr_data['height'][i]
+                    text_annotations.append({"text": text, "location": [x, y, w, h]})
+        
+        # Compile the engineering report
+        engineering_report = {
+            "image_resolution": [img.shape[1], img.shape[0]],
+            "detected_shapes": {"circles": detected_circles},
+            "text_annotations": text_annotations
+        }
+        report_json = json.dumps(engineering_report, indent=2)
+        print(f"--- Engineering Report ---\n{report_json}\n--------------------------")
 
-        1.  Find the contour of the primary white shape.
-        2.  Trace this contour and provide a list of (x, y) coordinates along its path.
-        3.  Your ONLY output must be a single, valid JSON array of arrays, where each inner array is an [x, y] coordinate.
-        4.  Do NOT include any explanations, greetings, or markdown formatting.
-        5.  The first and last points should be the same to indicate a closed loop.
+        # --- STAGE 2: LEAD ENGINEER (AI REASONING) ---
+        prompt = f"""
+        You are a senior CAD engineer. You will receive a JSON object containing a pre-analyzed engineering report of a technical drawing. Your task is to interpret this report and generate a final, precise CadQuery Python script.
 
-        Example output for a simple square:
-        [[0,0], [10,0], [10,10], [0,10], [0,0]]
+        Here is the engineering report:
+        {report_json}
+
+        INSTRUCTIONS:
+        1. Analyze the report. The report contains the image size, detected circles (with center and radius in pixels), and text annotations (with their content and location).
+        2. Associate text annotations with nearby shapes. For example, a text label 'ø50' near a circle indicates a diameter of 50 units. 'R25' indicates a radius of 25.
+        3. Assume a 1:1 pixel-to-unit mapping unless dimensions contradict this.
+        4. Create a logical construction plan. Start with the largest objects and then add smaller features or cutouts.
+        5. Generate a single, runnable CadQuery Python script. The final object must be assigned to a variable named 'result'.
+        6. Your ONLY output is the Python script. Do not add any other text or formatting.
         """
-        response = model.generate_content([prompt, image_file])
-        # Clean up the AI's response to be valid JSON
-        json_text = response.text.strip().replace("```json", "").replace("```", "").strip()
-        genai.delete_file(image_file.name)
-        
-        # --- NEW: PYTHON BUILDS THE MODEL, NOT THE AI ---
+
+        response = model.generate_content(prompt)
+        generated_script = response.text.strip().replace("```python", "").replace("```", "").strip()
+        print(f"--- AI Generated Script ---\n{generated_script}\n---------------------------")
+
+        # --- STAGE 3: EXECUTION ---
         try:
-            # 1. Parse the JSON data from the AI
-            points = json.loads(json_text)
-            if not isinstance(points, list) or len(points) < 3:
-                raise ValueError("AI did not return a valid list of points.")
+            script_locals = {}
+            exec(generated_script, {"cq": cq}, script_locals)
+            cadquery_object = script_locals.get("result")
 
-            # 2. Our Python code builds the CadQuery object
-            # This is more robust than executing AI-written code.
-            result = cq.Workplane("XY").polyline(points).close().extrude(10)
-            
-            # 3. Export the STL
-            output_stl_path = os.path.join(TEMP_UPLOAD_DIR, "output.stl")
-            cq.exporters.export(result, output_stl_path)
-            
-            with open(output_stl_path, "rb") as stl_file:
-                encoded_stl = base64.b64encode(stl_file.read()).decode('utf-8')
-            
-            # The "script" is now just the JSON data, for debugging
-            return JSONResponse(status_code=200, content={"script": json_text, "stl_data": encoded_stl})
-
-        except (json.JSONDecodeError, ValueError) as e:
-            return JSONResponse(status_code=422, content={"message": f"AI returned invalid data: {e}", "script": json_text})
+            if cadquery_object and isinstance(cadquery_object, (cq.Workplane, cq.Shape)):
+                output_stl_path = os.path.join(TEMP_UPLOAD_DIR, "output.stl")
+                cq.exporters.export(cadquery_object, output_stl_path)
+                with open(output_stl_path, "rb") as stl_file:
+                    encoded_stl = base64.b64encode(stl_file.read()).decode('utf-8')
+                return JSONResponse(status_code=200, content={"script": generated_script, "stl_data": encoded_stl})
+            else:
+                raise ValueError("Script did not produce a valid CadQuery object.")
         except Exception as geometry_error:
-            return JSONResponse(status_code=422, content={"message": f"Geometry Error: The extracted points created an invalid shape. (Error: {geometry_error})", "script": json_text})
+            return JSONResponse(status_code=422, content={"message": f"Geometry Error: {geometry_error}", "script": generated_script})
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
