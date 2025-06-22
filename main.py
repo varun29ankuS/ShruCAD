@@ -97,5 +97,57 @@ async def generate_model(file: UploadFile = File(...)):
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": str(e)})
 
+# Add this new function to your main.py file
+
+@app.post("/generate-from-prompt")
+async def generate_from_prompt(request_data: dict):
+    """
+    Generates a 3D model from a text prompt.
+    """
+    prompt_text = request_data.get("prompt")
+    if not prompt_text:
+        return JSONResponse(status_code=400, content={"message": "No prompt provided."})
+
+    if not model:
+        return JSONResponse(status_code=500, content={"message": "Google AI client not initialized."})
+
+    try:
+        # --- NEW AI PROMPT, FOCUSED ON TEXT-TO-CAD ---
+        system_prompt = f"""
+        You are an expert CAD engineer that translates natural language descriptions into precise CadQuery Python scripts.
+
+        USER'S REQUEST: "{prompt_text}"
+
+        INSTRUCTIONS:
+        1.  Read the user's request carefully.
+        2.  Translate the description into a logical sequence of CadQuery operations.
+        3.  Generate a single, runnable CadQuery Python script.
+        4.  The final object MUST be assigned to a variable named 'result'.
+        5.  Your ONLY output is the Python script. Do not add any explanations, greetings, or markdown formatting.
+        """
+        
+        print(f"--- Sending Text Prompt to AI ---\n{prompt_text}\n--------------------------")
+        response = model.generate_content(system_prompt)
+        generated_script = response.text.strip().replace("```python", "").replace("```", "").strip()
+        print(f"--- AI Generated Script ---\n{generated_script}\n---------------------------")
+
+        script_locals = {}
+        exec(generated_script, {"cq": cq}, script_locals)
+        cadquery_object = script_locals.get("result")
+        
+        if cadquery_object and isinstance(cadquery_object, (cq.Workplane, cq.Shape)):
+            output_stl_path = os.path.join(TEMP_UPLOAD_DIR, "output_from_prompt.stl")
+            cq.exporters.export(cadquery_object, output_stl_path)
+            
+            with open(output_stl_path, "rb") as stl_file:
+                encoded_stl = base64.b64encode(stl_file.read()).decode('utf-8')
+            
+            return JSONResponse(status_code=200, content={"script": generated_script, "stl_data": encoded_stl})
+        else:
+            raise ValueError("Script did not produce a valid CadQuery object.")
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e)})
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
