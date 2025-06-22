@@ -1,18 +1,19 @@
 # render.yaml
-# The official blueprint for our Forge AI backend service.
+# The official blueprint for our Forge AI backend service. (Version 2)
 
 services:
   # This defines our web service
   - type: web
     name: forge-ai-backend
-    # THIS IS THE CRITICAL LINE: It forces Render to use the Dockerfile.
+    # This is the critical line: It forces Render to use the Dockerfile.
     env: docker
     repo: https://github.com/YOUR_USERNAME/forge-ai-backend.git # IMPORTANT: Change this to your repo URL
     branch: main
     # Gives Render a URL to check if the service is healthy
     healthCheckPath: /docs
     # Define the environment variables the service needs.
-    # The secret value itself is set in the dashboard.
     envVars:
+      # THIS IS THE CORRECTED PART:
+      # By only providing the key, we tell Render that its value is a secret
+      # that will be provided manually in the dashboard.
       - key: GOOGLE_API_KEY
-        fromSync: false
