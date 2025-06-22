@@ -7,7 +7,7 @@ services:
     name: forge-ai-backend
     # This is the critical line: It forces Render to use the Dockerfile.
     env: docker
-    repo: https://github.com/varun29ankuS/ShruCAD/forge-ai-backend.git # IMPORTANT: Change this to your repo URL
+    repo: https://github.com/varun29ankuS/ShruCAD.git # IMPORTANT: Change this to your repo URL
     branch: main
     # Gives Render a URL to check if the service is healthy
     healthCheckPath: /docs
