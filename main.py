@@ -1,4 +1,4 @@
-# main.py - Final Version with Lazy Loading for EasyOCR
+# main.py - Final Version with Lazy Importing
 
 import os
 import shutil
@@ -6,7 +6,7 @@ import base64
 import cv2
 import numpy as np
 import json
-import easyocr
+# DO NOT import easyocr here. We will do it inside the function.
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,21 +14,18 @@ import uvicorn
 import google.generativeai as genai
 import cadquery as cq
 
-app = FastAPI(title="RasterShape AI Backend") # Using the final name
+app = FastAPI(title="RasterShape AI Backend")
 origins = ["*"] # Allow all for simplicity
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- NEW: LAZY LOADING SETUP ---
-# We declare the reader as None at the global scope.
-# It will only be initialized when the first request comes in.
+# The reader is declared as None. It will be created on the first request.
 ocr_reader = None
-# -----------------------------
 
 try:
     api_key = os.getenv("GOOGLE_API_KEY")
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-1.5-flash')
-    print("Google AI Gemini client initialized.")
+    print("Google AI Gemini client initialized successfully.")
 except Exception as e:
     model = None
     print(f"Error initializing Google AI client: {e}")
@@ -41,15 +38,16 @@ async def startup_event():
 
 @app.post("/generate")
 async def generate_model(file: UploadFile = File(...)):
-    global ocr_reader # Declare that we are using the global variable
+    global ocr_reader
 
-    # --- NEW: Initialize EasyOCR only on the first call ---
+    # --- THIS IS THE DEFINITIVE FIX ---
+    # We import and initialize the library only when this function is first called.
     if ocr_reader is None:
-        print("First request received. Initializing EasyOCR Reader...")
-        # This will run only ONCE in the server's lifetime
+        print("First request received. Importing and initializing EasyOCR...")
+        import easyocr # The import is now HERE.
         ocr_reader = easyocr.Reader(['en'])
         print("EasyOCR Reader initialized and ready for future requests.")
-    # ----------------------------------------------------
+    # --------------------------------------------------------------------
     
     if not model:
         return JSONResponse(status_code=500, content={"message": "Google AI client not initialized."})
@@ -61,7 +59,6 @@ async def generate_model(file: UploadFile = File(...)):
             
         img = cv2.imread(file_path)
 
-        # Use the now-initialized reader
         ocr_results = ocr_reader.readtext(file_path)
         text_annotations = []
         for (bbox, text, prob) in ocr_results:
