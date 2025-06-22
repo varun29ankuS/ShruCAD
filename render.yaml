@@ -1,5 +1,5 @@
 # render.yaml
-# The official blueprint for our Forge AI backend service. (Version 2)
+# The official blueprint for our Forge AI backend service. (Version 3 - Corrected)
 
 services:
   # This defines our web service
@@ -13,7 +13,8 @@ services:
     healthCheckPath: /docs
     # Define the environment variables the service needs.
     envVars:
-      # THIS IS THE CORRECTED PART:
-      # By only providing the key, we tell Render that its value is a secret
-      # that will be provided manually in the dashboard.
+      # THIS IS THE FINAL, CORRECTED SYNTAX:
+      # We provide both a key and a placeholder value.
+      # The real secret value will be set in the dashboard.
       - key: GOOGLE_API_KEY
+        value: "placeholder"
