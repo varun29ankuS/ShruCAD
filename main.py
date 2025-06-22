@@ -1,4 +1,4 @@
-# main.py - Final Version with Syntax Fix
+# main.py - Final Version with Lazy Loading for EasyOCR
 
 import os
 import shutil
@@ -14,13 +14,15 @@ import uvicorn
 import google.generativeai as genai
 import cadquery as cq
 
-app = FastAPI(title="Shastra AI Backend") # Updated with the final name
-origins = ["http://localhost", "http://localhost:5173"]
+app = FastAPI(title="RasterShape AI Backend") # Using the final name
+origins = ["*"] # Allow all for simplicity
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-print("Initializing EasyOCR Reader...")
-ocr_reader = easyocr.Reader(['en'])
-print("EasyOCR Reader initialized.")
+# --- NEW: LAZY LOADING SETUP ---
+# We declare the reader as None at the global scope.
+# It will only be initialized when the first request comes in.
+ocr_reader = None
+# -----------------------------
 
 try:
     api_key = os.getenv("GOOGLE_API_KEY")
@@ -35,9 +37,20 @@ TEMP_UPLOAD_DIR = "temp_uploads"
 @app.on_event("startup")
 async def startup_event():
     os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
+    print("Server startup complete. TEMP_UPLOAD_DIR is ready.")
 
 @app.post("/generate")
 async def generate_model(file: UploadFile = File(...)):
+    global ocr_reader # Declare that we are using the global variable
+
+    # --- NEW: Initialize EasyOCR only on the first call ---
+    if ocr_reader is None:
+        print("First request received. Initializing EasyOCR Reader...")
+        # This will run only ONCE in the server's lifetime
+        ocr_reader = easyocr.Reader(['en'])
+        print("EasyOCR Reader initialized and ready for future requests.")
+    # ----------------------------------------------------
+    
     if not model:
         return JSONResponse(status_code=500, content={"message": "Google AI client not initialized."})
 
@@ -48,6 +61,7 @@ async def generate_model(file: UploadFile = File(...)):
             
         img = cv2.imread(file_path)
 
+        # Use the now-initialized reader
         ocr_results = ocr_reader.readtext(file_path)
         text_annotations = []
         for (bbox, text, prob) in ocr_results:
@@ -62,10 +76,8 @@ async def generate_model(file: UploadFile = File(...)):
         
         prompt = f"""
         You are a senior CAD engineer. You will receive a JSON object containing a pre-analyzed engineering report of a technical drawing. Your task is to interpret this report and generate a final, precise CadQuery Python script. Based on the text and its location, create a plausible object.
-
         Here is the engineering report:
         {report_json}
-
         Generate a single, runnable CadQuery Python script. The final object must be assigned to a variable named 'result'. Your ONLY output is the Python script.
         """
         response = model.generate_content(prompt)
@@ -77,10 +89,7 @@ async def generate_model(file: UploadFile = File(...)):
         cadquery_object = script_locals.get("result")
         
         if cadquery_object and isinstance(cadquery_object, (cq.Workplane, cq.Shape)):
-            # --- THIS IS THE CORRECTED LINE ---
             output_stl_path = os.path.join(TEMP_UPLOAD_DIR, "output.stl")
-            # ----------------------------------
-            
             cq.exporters.export(cadquery_object, output_stl_path)
             with open(output_stl_path, "rb") as stl_file:
                 encoded_stl = base64.b64encode(stl_file.read()).decode('utf-8')
