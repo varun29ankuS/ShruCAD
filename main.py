@@ -43,7 +43,8 @@ app = FastAPI(
 origins = [
     "http://localhost:3000",
     "http://localhost:3001",
-    "https://your-frontend-domain.com",  # Add your actual frontend domain
+    "http://localhost:5173",
+    "https://forgeai-frontend-bng1.vercel.app/",  # Add your actual frontend domain
     "*"  # Remove this in production and specify exact domains
 ]
 
