@@ -12,10 +12,10 @@ google-generativeai==0.3.2
 # Minimal dependencies
 pydantic==2.5.0
 numpy==1.26.4
+gunicorn==21.2.0
 
-# Optional: Add these one by one if needed
-# cadquery==2.3.1
-# opencv-python-headless==4.8.1.78  
-# easyocr==1.7.0
-# matplotlib==3.7.1
-# svgwrite==1.4.3
+cadquery==2.3.1
+opencv-python-headless==4.8.1.78  
+easyocr==1.7.0
+matplotlib==3.7.1
+svgwrite==1.4.3
