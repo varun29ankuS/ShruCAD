@@ -15,6 +15,20 @@ from pydantic import BaseModel
 import uvicorn
 import logging
 
+def get_safe_exec_globals(cq_module):
+    """Returns a dictionary of safe globals for executing CadQuery scripts."""
+    safe_builtins = {
+        "__import__": __import__,
+        "abs": abs, "min": min, "max": max, "range": range,
+        "len": len, "sum": sum, "float": float, "int": int,
+        "str": str, "print": print
+    }
+    return {
+        "cq": cq_module,
+        "__builtins__": safe_builtins
+    }
+
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -355,7 +369,7 @@ async def generate_from_prompt(request: PromptRequest, background_tasks: Backgro
 
         # Execute script in controlled environment
         script_locals = {}
-        script_globals = {"cq": cq, "__builtins__": {}}  # Restricted globals for security
+        script_globals = get_safe_exec_globals(cq) 
         
         try:
             exec(generated_script, script_globals, script_locals)
@@ -525,7 +539,7 @@ async def generate_model(file: UploadFile = File(...), background_tasks: Backgro
 
         # Execute CadQuery script
         script_locals = {}
-        script_globals = {"cq": cq, "__builtins__": {}}
+        script_globals = get_safe_exec_globals(cq)
         
         try:
             exec(generated_script, script_globals, script_locals)
