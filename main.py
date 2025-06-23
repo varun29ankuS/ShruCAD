@@ -1,676 +1,468 @@
-import React, { useState, useEffect } from 'react';
+# main.py - Complete Fixed Version with AI Chat Integration
 
-function App() {
-  // Core state
-  const [activeTab, setActiveTab] = useState('prompt');
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [previewImageUrl, setPreviewImageUrl] = useState(null);
-  const [textPrompt, setTextPrompt] = useState('');
-  const [complexity, setComplexity] = useState('medium');
-  const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState('');
-  const [generatedScript, setGeneratedScript] = useState('');
-  const [modelData, setModelData] = useState(null);
-  const [progress, setProgress] = useState(0);
-  
-  // Drawing state
-  const [cadFile, setCadFile] = useState(null);
-  const [selectedViews, setSelectedViews] = useState(['front', 'side', 'top']);
-  const [generatedDrawings, setGeneratedDrawings] = useState({});
-  
-  // Chat state
-  const [showChat, setShowChat] = useState(false);
-  const [chatMessages, setChatMessages] = useState([{
-    id: 1, type: 'assistant', content: "Hi! I can help with 3D modeling questions.", timestamp: new Date().toISOString()
-  }]);
-  const [chatInput, setChatInput] = useState('');
-  const [isChatLoading, setIsChatLoading] = useState(false);
+import os
+import shutil
+import base64
+import cv2
+import numpy as np
+import json
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import uvicorn
+import google.generativeai as genai
+import cadquery as cq
 
-  const backendUrl = 'https://forge-ai-backend.onrender.com';
+app = FastAPI(title="RasterShape AI Backend")
 
-  // Drawing views
-  const drawingViews = [
-    { id: 'front', name: 'Front View', icon: '⬜' },
-    { id: 'side', name: 'Side View', icon: '📐' },
-    { id: 'top', name: 'Top View', icon: '⬆️' },
-    { id: 'isometric', name: 'Isometric', icon: '📦' }
-  ];
+# CORS setup - consider restricting origins in production
+origins = ["*"]  # For development - restrict in production
+app.add_middleware(
+    CORSMiddleware, 
+    allow_origins=origins, 
+    allow_credentials=True, 
+    allow_methods=["*"], 
+    allow_headers=["*"]
+)
 
-  // Utility functions
-  const simulateProgress = () => {
-    setProgress(0);
-    const interval = setInterval(() => {
-      setProgress(prev => prev >= 90 ? (clearInterval(interval), 90) : prev + Math.random() * 15);
-    }, 500);
-    return interval;
-  };
+# Configuration
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
 
-  const resetResults = () => {
-    setMessage('');
-    setGeneratedScript('');
-    setModelData(null);
-    setProgress(0);
-  };
+# Global variables
+ocr_reader = None
 
-  // File handlers
-  const handleFileChange = (event) => {
-    const file = event.target.files[0];
-    if (file) {
-      setSelectedFile(file);
-      setPreviewImageUrl(URL.createObjectURL(file));
-      resetResults();
+# Pydantic models for chat
+class ChatMessage(BaseModel):
+    id: int
+    type: str
+    content: str
+    timestamp: str
+
+class ChatRequest(BaseModel):
+    message: str
+    context: Optional[Dict[str, Any]] = None
+    conversation_history: List[ChatMessage] = []
+
+# Initialize Google AI
+try:
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        print("WARNING: GOOGLE_API_KEY environment variable not set")
+        model = None
+    else:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        print("Google AI Gemini client initialized successfully.")
+except Exception as e:
+    model = None
+    print(f"Error initializing Google AI client: {e}")
+
+TEMP_UPLOAD_DIR = "temp_uploads"
+
+@app.on_event("startup")
+async def startup_event():
+    os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
+    print("Server startup complete. TEMP_UPLOAD_DIR is ready.")
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring"""
+    return {
+        "status": "healthy",
+        "ai_model_available": model is not None,
+        "ocr_ready": ocr_reader is not None,
+        "temp_dir_exists": os.path.exists(TEMP_UPLOAD_DIR),
+        "google_api_key_set": bool(os.getenv("GOOGLE_API_KEY"))
     }
-  };
 
-  const handleCADFileChange = (event) => {
-    const file = event.target.files[0];
-    if (file) {
-      setCadFile(file);
-      setGeneratedDrawings({});
-    }
-  };
+def validate_file(file: UploadFile) -> None:
+    """Validate uploaded file"""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+    
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
 
-  // Generation functions
-  const handleGenerateFromPrompt = async () => {
-    if (!textPrompt.trim()) return;
-    
-    setIsLoading(true);
-    setMessage('🤖 AI is interpreting your idea...');
-    resetResults();
-    const progressInterval = simulateProgress();
-    
-    try {
-      const response = await fetch(`${backendUrl}/generate-from-prompt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: textPrompt, complexity })
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) throw new Error(data.detail || 'Generation failed');
-      
-      clearInterval(progressInterval);
-      setProgress(100);
-      setMessage('🎉 Your 3D model is ready!');
-      setGeneratedScript(data.script);
-      setModelData(data.stl_data);
-      
-    } catch (error) {
-      clearInterval(progressInterval);
-      setProgress(0);
-      setMessage(`❌ Error: ${error.message}`);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+async def initialize_ocr():
+    """Initialize OCR reader with better error handling"""
+    global ocr_reader
+    if ocr_reader is None:
+        try:
+            print("First request received. Importing and initializing EasyOCR...")
+            import easyocr
+            ocr_reader = easyocr.Reader(['en'], gpu=False)  # Explicitly disable GPU for Render
+            print("EasyOCR Reader initialized and ready for future requests.")
+        except Exception as e:
+            print(f"Failed to initialize EasyOCR: {e}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"OCR service initialization failed: {str(e)}"
+            )
+    return ocr_reader
 
-  const handleGenerateFromImage = async () => {
-    if (!selectedFile) return;
+@app.post("/chat")
+async def chat_with_ai(request: ChatRequest):
+    """
+    Chat endpoint that connects to Google's Gemini AI
+    """
+    if not model:
+        raise HTTPException(
+            status_code=503, 
+            detail="AI chat service is not configured. Please set GOOGLE_API_KEY environment variable."
+        )
     
-    setIsLoading(true);
-    setMessage('🔍 Analyzing image...');
-    const progressInterval = simulateProgress();
-    
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-    
-    try {
-      const response = await fetch(`${backendUrl}/generate`, {
-        method: 'POST',
-        body: formData
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) throw new Error(data.detail || 'Generation failed');
-      
-      clearInterval(progressInterval);
-      setProgress(100);
-      setMessage('🎉 Model generation complete!');
-      setGeneratedScript(data.script);
-      setModelData(data.stl_data);
-      
-    } catch (error) {
-      clearInterval(progressInterval);
-      setProgress(0);
-      setMessage(`❌ Error: ${error.message}`);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Drawing generation - UPDATED for backend compatibility
-  const handleGenerateDrawings = async () => {
-    if (!cadFile && !modelData) return;
-    
-    setIsLoading(true);
-    setMessage('📐 Generating drawings...');
-    const progressInterval = simulateProgress();
-    
-    try {
-      // For now, simulate drawing generation since backend endpoint doesn't exist yet
-      // You'll need to add this endpoint to your main.py:
-      /*
-      @app.post("/generate-drawings")
-      async def generate_drawings(
-          file: UploadFile = File(...),
-          views: str = Form(...),
-          scale: str = Form("1:1"),
-          format: str = Form("svg")
-      ):
-          # Process STL file and generate technical drawings
-          # Return base64 encoded drawing data for each view
-          return {"drawings": {"front": "base64_data", "side": "base64_data", ...}}
-      */
-      
-      // Temporary simulation - replace with actual API call
-      setTimeout(() => {
-        clearInterval(progressInterval);
-        setProgress(100);
-        setMessage('📐 Drawings generated!');
+    try:
+        # Build context-aware prompt
+        system_prompt = """You are an expert AI assistant specializing in 3D modeling, CAD design, and manufacturing. 
+        You help users with:
+        - 3D modeling questions and best practices
+        - CAD design optimization
+        - 3D printing advice and troubleshooting
+        - CadQuery/OpenSCAD code explanation and improvements
+        - Technical drawing and manufacturing guidance
+        - Material selection and design considerations
         
-        // Simulate generated drawings
-        const mockDrawings = {};
-        selectedViews.forEach(view => {
-          // Create a simple SVG placeholder
-          const svg = `<svg width="300" height="200" xmlns="http://www.w3.org/2000/svg">
-            <rect width="300" height="200" fill="#f8f9fa" stroke="#dee2e6"/>
-            <text x="150" y="100" text-anchor="middle" font-family="Arial" font-size="16" fill="#6c757d">
-              ${drawingViews.find(v => v.id === view)?.name || view} View
-            </text>
-            <text x="150" y="120" text-anchor="middle" font-family="Arial" font-size="12" fill="#6c757d">
-              Generated from STL
-            </text>
-          </svg>`;
-          mockDrawings[view] = btoa(svg);
-        });
+        Provide practical, actionable advice. Be concise but thorough. Always be helpful and professional."""
         
-        setGeneratedDrawings(mockDrawings);
-        setIsLoading(false);
-      }, 2000);
-      
-    } catch (error) {
-      clearInterval(progressInterval);
-      setProgress(0);
-      setMessage(`❌ Error: ${error.message}`);
-      setIsLoading(false);
-    }
-  };
-
-  // Chat functions
-  const sendChatMessage = async () => {
-    if (!chatInput.trim() || isChatLoading) return;
-    
-    const userMessage = {
-      id: Date.now(),
-      type: 'user',
-      content: chatInput.trim(),
-      timestamp: new Date().toISOString()
-    };
-    
-    setChatMessages(prev => [...prev, userMessage]);
-    const currentInput = chatInput.trim();
-    setChatInput('');
-    setIsChatLoading(true);
-    
-    try {
-      // Prepare context about current work for better AI responses
-      const context = {
-        activeTab,
-        hasModel: !!modelData,
-        hasScript: !!generatedScript,
-        hasDrawings: Object.keys(generatedDrawings).length > 0,
-        currentPrompt: textPrompt,
-        complexity,
-        selectedViews,
-        recentScript: generatedScript ? generatedScript.substring(0, 500) : null
-      };
-      
-      const response = await fetch(`${backendUrl}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          message: currentInput,
-          context: context,
-          conversation_history: chatMessages.slice(-6) // Last 6 messages for context
-        })
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.detail || 'Chat service temporarily unavailable');
-      }
-      
-      const assistantMessage = {
-        id: Date.now() + 1,
-        type: 'assistant',
-        content: data.response,
-        timestamp: new Date().toISOString()
-      };
-      
-      setChatMessages(prev => [...prev, assistantMessage]);
-      
-    } catch (error) {
-      const errorMessage = {
-        id: Date.now() + 1,
-        type: 'assistant',
-        content: `I'm having trouble connecting right now. Error: ${error.message}. Please try again in a moment.`,
-        timestamp: new Date().toISOString()
-      };
-      
-      setChatMessages(prev => [...prev, errorMessage]);
-    } finally {
-      setIsChatLoading(false);
-    }
-  };
-
-  const downloadSTL = () => {
-    if (!modelData) return;
-    
-    try {
-      const byteCharacters = atob(modelData);
-      const byteNumbers = new Array(byteCharacters.length);
-      
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `model-${Date.now()}.stl`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      
-    } catch (error) {
-      setMessage(`Download failed: ${error.message}`);
-    }
-  };
-
-  const downloadDrawings = () => {
-    Object.entries(generatedDrawings).forEach(([viewName, drawingData]) => {
-      const link = document.createElement('a');
-      link.href = `data:image/svg+xml;base64,${drawingData}`;
-      link.download = `${viewName}-drawing.svg`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    });
-  };
-
-  const ModelPreview = ({ modelData }) => (
-    <div style={{
-      width: '100%', height: '250px', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-      borderRadius: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center',
-      justifyContent: 'center', color: '#fff', textAlign: 'center', padding: '20px'
-    }}>
-      <div style={{ fontSize: '2.5rem', marginBottom: '12px' }}>🎯</div>
-      <h3 style={{ margin: '0 0 8px 0', fontSize: '1.1rem' }}>3D Model Ready</h3>
-      <p style={{ margin: 0, opacity: 0.8, fontSize: '0.9rem' }}>
-        {modelData ? 'Generated successfully' : 'Ready for processing'}
-      </p>
-    </div>
-  );
-
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', minHeight: '100vh',
-      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-      fontFamily: 'Arial, sans-serif', color: '#fff',
-      marginRight: showChat ? '350px' : '0', transition: 'margin-right 0.3s ease'
-    }}>
-      
-      {/* Header */}
-      <header style={{
-        background: 'rgba(255, 255, 255, 0.1)', padding: '20px',
-        borderBottom: '1px solid rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(10px)'
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <h1 style={{ margin: '0 0 5px 0', fontSize: '1.8rem' }}>🎯 RasterShape AI</h1>
-            <p style={{ margin: 0, opacity: 0.8 }}>AI-powered 3D modeling and technical drawings</p>
-          </div>
-          <button 
-            onClick={() => setShowChat(!showChat)}
-            style={{
-              background: showChat ? '#4facfe' : '#667eea', border: 'none', color: 'white',
-              padding: '12px 20px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600'
-            }}
-          >
-            🤖 AI Chat
-          </button>
-        </div>
-      </header>
-
-      {/* Chat Panel */}
-      <div style={{
-        position: 'fixed', top: 0, right: showChat ? '0' : '-350px', width: '350px',
-        height: '100vh', background: 'rgba(26, 26, 46, 0.95)', backdropFilter: 'blur(10px)',
-        borderLeft: '1px solid rgba(255, 255, 255, 0.1)', display: 'flex', flexDirection: 'column',
-        transition: 'right 0.3s ease', zIndex: 1000
-      }}>
-        <div style={{
-          padding: '20px', borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center'
-        }}>
-          <h3 style={{ margin: 0, color: '#fff' }}>🤖 AI Assistant</h3>
-          <button onClick={() => setShowChat(false)} style={{
-            background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '1.2rem'
-          }}>✕</button>
-        </div>
+        # Add context about user's current work
+        context_info = ""
+        if request.context:
+            context_info = f"\n\nCurrent user context:"
+            if request.context.get('activeTab'):
+                context_info += f"\n- Working on: {request.context['activeTab']} workflow"
+            if request.context.get('hasModel'):
+                context_info += f"\n- Has generated 3D model: Yes"
+            if request.context.get('currentPrompt'):
+                context_info += f"\n- Current project: {request.context['currentPrompt'][:100]}..."
+            if request.context.get('complexity'):
+                context_info += f"\n- Complexity level: {request.context['complexity']}"
+            if request.context.get('recentScript'):
+                context_info += f"\n- Recent generated code snippet: {request.context['recentScript'][:200]}..."
         
-        <div style={{ flex: 1, overflowY: 'auto', padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {chatMessages.map(msg => (
-            <div key={msg.id} style={{
-              display: 'flex', gap: '8px', alignItems: 'flex-start',
-              flexDirection: msg.type === 'user' ? 'row-reverse' : 'row'
-            }}>
-              <div style={{
-                width: '32px', height: '32px', borderRadius: '50%',
-                background: msg.type === 'user' ? '#667eea' : 'rgba(255, 255, 255, 0.1)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.9rem'
-              }}>
-                {msg.type === 'user' ? '👤' : '🤖'}
-              </div>
-              <div style={{
-                background: msg.type === 'user' ? '#667eea' : 'rgba(255, 255, 255, 0.1)',
-                padding: '10px 14px', borderRadius: '12px', maxWidth: '240px',
-                fontSize: '0.9rem', lineHeight: 1.4
-              }}>
-                {msg.content}
-              </div>
-            </div>
-          ))}
-          {isChatLoading && (
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: '10px' }}>
-              <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'rgba(255, 255, 255, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>🤖</div>
-              <div style={{ color: 'rgba(255, 255, 255, 0.6)', fontSize: '0.9rem' }}>Thinking...</div>
-            </div>
-          )}
-        </div>
+        # Build conversation history
+        conversation_context = ""
+        if request.conversation_history:
+            conversation_context = "\n\nRecent conversation:"
+            for msg in request.conversation_history[-4:]:  # Last 4 messages
+                role = "User" if msg.type == "user" else "Assistant"
+                conversation_context += f"\n{role}: {msg.content[:150]}..."
         
-        <div style={{ padding: '20px', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <input
-              type="text"
-              placeholder="Ask about 3D modeling..."
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && sendChatMessage()}
-              style={{
-                flex: 1, background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)',
-                borderRadius: '8px', padding: '10px', color: '#fff', fontSize: '0.9rem'
-              }}
-            />
-            <button onClick={sendChatMessage} disabled={!chatInput.trim() || isChatLoading} style={{
-              background: '#667eea', border: 'none', color: 'white', width: '40px', height: '40px',
-              borderRadius: '8px', cursor: 'pointer', opacity: (!chatInput.trim() || isChatLoading) ? 0.5 : 1
-            }}>🚀</button>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Content */}
-      <main style={{ flex: 1, padding: '20px' }}>
+        # Complete prompt
+        full_prompt = f"{system_prompt}{context_info}{conversation_context}\n\nUser's current question: {request.message}\n\nProvide a helpful response:"
         
-        {/* Tabs */}
-        <div style={{ marginBottom: '30px' }}>
-          <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
-            {[
-              { id: 'prompt', icon: '✏️', label: 'Text to 3D' },
-              { id: 'image', icon: '📷', label: 'Image to 3D' },
-              { id: 'drawings', icon: '📐', label: '3D to Drawings' }
-            ].map(tab => (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
-                background: activeTab === tab.id ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.1)',
-                border: 'none', color: '#fff', padding: '12px 20px', borderRadius: '8px',
-                cursor: 'pointer', fontWeight: '600', transition: 'all 0.3s ease'
-              }}>
-                {tab.icon} {tab.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        # Generate response using Gemini
+        response = model.generate_content(full_prompt)
+        
+        if not response.text:
+            raise Exception("Empty response from AI model")
+        
+        return {
+            "response": response.text,
+            "status": "success"
+        }
+        
+    except Exception as e:
+        print(f"Chat error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI chat error: {str(e)}"
+        )
 
-        {/* Tab Content */}
-        {activeTab === 'prompt' && (
-          <div style={{ marginBottom: '30px' }}>
-            <h3>🤖 Describe Your 3D Model</h3>
-            <textarea
-              placeholder="Example: A 50mm cube with a 20mm cylindrical hole through the center..."
-              value={textPrompt}
-              onChange={(e) => setTextPrompt(e.target.value)}
-              disabled={isLoading}
-              style={{
-                width: '100%', height: '120px', background: 'rgba(255, 255, 255, 0.1)',
-                border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '8px',
-                padding: '15px', color: '#fff', fontSize: '14px', resize: 'vertical'
-              }}
-            />
-            <div style={{ display: 'flex', gap: '15px', marginTop: '15px', alignItems: 'center' }}>
-              <select value={complexity} onChange={(e) => setComplexity(e.target.value)} disabled={isLoading} style={{
-                background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)',
-                borderRadius: '8px', padding: '10px', color: '#fff'
-              }}>
-                <option value="simple">Simple</option>
-                <option value="medium">Medium</option>
-                <option value="complex">Complex</option>
-              </select>
-              <button onClick={handleGenerateFromPrompt} disabled={isLoading || !textPrompt.trim()} style={{
-                background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', border: 'none',
-                color: 'white', padding: '12px 24px', borderRadius: '8px', cursor: 'pointer',
-                fontWeight: '600', opacity: (isLoading || !textPrompt.trim()) ? 0.5 : 1
-              }}>
-                {isLoading ? '🔄 Generating...' : '🚀 Generate 3D Model'}
-              </button>
-            </div>
-          </div>
-        )}
+@app.post("/generate")
+async def generate_model(file: UploadFile = File(...)):
+    if not model:
+        raise HTTPException(
+            status_code=503, 
+            detail="AI service unavailable. GOOGLE_API_KEY may not be set."
+        )
 
-        {activeTab === 'image' && (
-          <div style={{ marginBottom: '30px' }}>
-            <h3>📷 Upload Technical Drawing</h3>
-            <div style={{
-              border: '2px dashed rgba(255, 255, 255, 0.3)', borderRadius: '8px',
-              padding: '40px', textAlign: 'center', cursor: 'pointer'
-            }} onClick={() => document.getElementById('file-input').click()}>
-              <input id="file-input" type="file" onChange={handleFileChange} accept="image/*" disabled={isLoading} style={{ display: 'none' }} />
-              {selectedFile ? (
-                <div>
-                  <div style={{ fontSize: '2rem', marginBottom: '10px' }}>📁</div>
-                  <div>{selectedFile.name}</div>
-                  <div style={{ fontSize: '0.9rem', opacity: 0.7, marginTop: '5px' }}>Click to change</div>
-                </div>
-              ) : (
-                <div>
-                  <div style={{ fontSize: '2rem', marginBottom: '10px' }}>📤</div>
-                  <div>Click to upload image</div>
-                  <div style={{ fontSize: '0.9rem', opacity: 0.7, marginTop: '5px' }}>JPEG, PNG, BMP, TIFF</div>
-                </div>
-              )}
-            </div>
-            <button onClick={handleGenerateFromImage} disabled={isLoading || !selectedFile} style={{
-              background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', border: 'none',
-              color: 'white', padding: '12px 24px', borderRadius: '8px', cursor: 'pointer',
-              fontWeight: '600', marginTop: '15px', opacity: (isLoading || !selectedFile) ? 0.5 : 1
-            }}>
-              {isLoading ? '🔄 Analyzing...' : '🚀 Generate from Image'}
-            </button>
-          </div>
-        )}
+    # Validate file
+    validate_file(file)
+    
+    # Check file size
+    file_content = await file.read()
+    if len(file_content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413, 
+            detail=f"File too large. Maximum size: {MAX_FILE_SIZE // (1024*1024)}MB"
+        )
+    
+    # Reset file pointer
+    await file.seek(0)
+    
+    # Initialize OCR
+    reader = await initialize_ocr()
+    
+    file_path = None
+    try:
+        # Save uploaded file
+        file_path = os.path.join(TEMP_UPLOAD_DIR, file.filename)
+        with open(file_path, "wb") as buffer:
+            buffer.write(file_content)
+        
+        # Process with OCR
+        ocr_results = reader.readtext(file_path)
+        text_annotations = []
+        
+        for (bbox, text, prob) in ocr_results:
+            if prob > 0.6:
+                (top_left, _, bottom_right, _) = bbox
+                x, y = int(top_left[0]), int(top_left[1])
+                w, h = int(bottom_right[0] - top_left[0]), int(bottom_right[1] - top_left[1])
+                text_annotations.append({
+                    "text": text, 
+                    "location": [x, y, w, h],
+                    "confidence": float(prob)
+                })
+        
+        if not text_annotations:
+            raise HTTPException(
+                status_code=400,
+                detail="No readable text found in image. Please ensure image contains clear technical drawings or text."
+            )
+        
+        engineering_report = {
+            "text_annotations": text_annotations,
+            "total_annotations": len(text_annotations)
+        }
+        report_json = json.dumps(engineering_report, indent=2)
+        print(f"--- Engineering Report (from EasyOCR) ---\n{report_json}\n--------------------------")
+        
+        # Generate with AI
+        prompt = f"""
+        You are a senior CAD engineer. You will receive a JSON object containing a pre-analyzed engineering report of a technical drawing. Your task is to interpret this report and generate a final, precise CadQuery Python script. Based on the text and its location, create a plausible object.
+        
+        Here is the engineering report:
+        {report_json}
+        
+        Generate a single, runnable CadQuery Python script. The final object must be assigned to a variable named 'result'. Your ONLY output is the Python script.
+        """
+        
+        try:
+            response = model.generate_content(prompt)
+            generated_script = response.text.strip().replace("```python", "").replace("```", "").strip()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"AI generation failed: {str(e)}")
+        
+        print(f"--- AI Generated Script ---\n{generated_script}\n---------------------------")
 
-        {activeTab === 'drawings' && (
-          <div style={{ marginBottom: '30px' }}>
-            <h3>📐 Generate Technical Drawings</h3>
-            <div style={{
-              border: '2px dashed rgba(255, 255, 255, 0.3)', borderRadius: '8px',
-              padding: '40px', textAlign: 'center', cursor: 'pointer', marginBottom: '20px'
-            }} onClick={() => document.getElementById('cad-file-input').click()}>
-              <input id="cad-file-input" type="file" onChange={handleCADFileChange} accept=".stl" disabled={isLoading} style={{ display: 'none' }} />
-              {cadFile ? (
-                <div>
-                  <div style={{ fontSize: '2rem', marginBottom: '10px' }}>🎯</div>
-                  <div>{cadFile.name}</div>
-                  <div style={{ fontSize: '0.9rem', opacity: 0.7, marginTop: '5px' }}>STL file ready</div>
-                </div>
-              ) : (
-                <div>
-                  <div style={{ fontSize: '2rem', marginBottom: '10px' }}>📤</div>
-                  <div>Upload STL File</div>
-                  {modelData && (
-                    <button onClick={() => { setCadFile(null); }} style={{
-                      background: 'rgba(255, 255, 255, 0.2)', border: 'none', color: '#fff',
-                      padding: '8px 16px', borderRadius: '6px', cursor: 'pointer', marginTop: '10px'
-                    }}>
-                      📦 Use Current Model
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
+        # Execute CadQuery script
+        script_locals = {}
+        try:
+            exec(generated_script, {"cq": cq}, script_locals)
+            cadquery_object = script_locals.get("result")
             
-            <div style={{ marginBottom: '20px' }}>
-              <h4>Select Views:</h4>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
-                {drawingViews.map(view => (
-                  <div key={view.id} onClick={() => {
-                    setSelectedViews(prev => 
-                      prev.includes(view.id) ? prev.filter(id => id !== view.id) : [...prev, view.id]
-                    );
-                  }} style={{
-                    background: selectedViews.includes(view.id) ? 'rgba(59, 130, 246, 0.3)' : 'rgba(255, 255, 255, 0.1)',
-                    border: selectedViews.includes(view.id) ? '2px solid #3b82f6' : '2px solid transparent',
-                    padding: '15px', borderRadius: '8px', cursor: 'pointer', textAlign: 'center', transition: 'all 0.3s ease'
-                  }}>
-                    <div style={{ fontSize: '1.5rem', marginBottom: '5px' }}>{view.icon}</div>
-                    <div style={{ fontSize: '0.9rem' }}>{view.name}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            if not cadquery_object or not isinstance(cadquery_object, (cq.Workplane, cq.Shape)):
+                raise ValueError("Script did not produce a valid CadQuery object.")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Script execution failed: {str(e)}")
+        
+        # Export STL
+        output_stl_path = os.path.join(TEMP_UPLOAD_DIR, "output.stl")
+        try:
+            cq.exporters.export(cadquery_object, output_stl_path)
+            with open(output_stl_path, "rb") as stl_file:
+                encoded_stl = base64.b64encode(stl_file.read()).decode('utf-8')
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"STL export failed: {str(e)}")
+        finally:
+            # Clean up STL file
+            if os.path.exists(output_stl_path):
+                os.remove(output_stl_path)
+        
+        return JSONResponse(
+            status_code=200, 
+            content={
+                "script": generated_script, 
+                "stl_data": encoded_stl,
+                "engineering_report": engineering_report
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+    finally:
+        # Always clean up input file
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"Error cleaning up file {file_path}: {e}")
+
+@app.post("/generate-from-prompt")
+async def generate_from_prompt(request_data: dict):
+    """Generate 3D model from text prompt"""
+    prompt_text = request_data.get("prompt")
+    if not prompt_text:
+        raise HTTPException(status_code=400, detail="No prompt provided.")
+
+    if not model:
+        raise HTTPException(
+            status_code=503, 
+            detail="AI service unavailable. GOOGLE_API_KEY may not be set."
+        )
+
+    try:
+        system_prompt = f"""
+        You are an expert CAD engineer that translates natural language descriptions into precise CadQuery Python scripts.
+
+        USER'S REQUEST: "{prompt_text}"
+
+        INSTRUCTIONS:
+        1. Read the user's request carefully.
+        2. Translate the description into a logical sequence of CadQuery operations.
+        3. Generate a single, runnable CadQuery Python script.
+        4. The final object MUST be assigned to a variable named 'result'.
+        5. Your ONLY output is the Python script. Do not add any explanations, greetings, or markdown formatting.
+        """
+        
+        print(f"--- Sending Text Prompt to AI ---\n{prompt_text}\n--------------------------")
+        
+        try:
+            response = model.generate_content(system_prompt)
+            generated_script = response.text.strip().replace("```python", "").replace("```", "").strip()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"AI generation failed: {str(e)}")
+        
+        print(f"--- AI Generated Script ---\n{generated_script}\n---------------------------")
+
+        # Execute script
+        script_locals = {}
+        try:
+            exec(generated_script, {"cq": cq}, script_locals)
+            cadquery_object = script_locals.get("result")
             
-            <button onClick={handleGenerateDrawings} disabled={isLoading || (!cadFile && !modelData) || selectedViews.length === 0} style={{
-              background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', border: 'none',
-              color: 'white', padding: '12px 24px', borderRadius: '8px', cursor: 'pointer',
-              fontWeight: '600', opacity: (isLoading || (!cadFile && !modelData) || selectedViews.length === 0) ? 0.5 : 1
-            }}>
-              {isLoading ? '🔄 Generating...' : '📐 Generate Drawings'}
-            </button>
-          </div>
-        )}
-
-        {/* Progress */}
-        {isLoading && (
-          <div style={{
-            background: 'rgba(255, 255, 255, 0.1)', borderRadius: '8px', padding: '20px',
-            marginBottom: '20px', textAlign: 'center'
-          }}>
-            <div style={{ fontSize: '2rem', marginBottom: '10px' }}>🤖</div>
-            <div style={{
-              background: 'rgba(255, 255, 255, 0.2)', borderRadius: '10px', height: '8px',
-              marginBottom: '10px', overflow: 'hidden'
-            }}>
-              <div style={{
-                background: 'linear-gradient(90deg, #4facfe, #00f2fe)', height: '100%',
-                width: `${progress}%`, transition: 'width 0.3s ease'
-              }} />
-            </div>
-            <div>{message}</div>
-          </div>
-        )}
-
-        {/* Results */}
-        {(generatedScript || modelData) && activeTab !== 'drawings' && (
-          <div style={{
-            display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-            gap: '20px', marginBottom: '20px'
-          }}>
-            <div style={{ background: 'rgba(255, 255, 255, 0.1)', borderRadius: '8px', padding: '20px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                <h3 style={{ margin: 0 }}>⚙️ Generated Code</h3>
-                {generatedScript && (
-                  <button onClick={() => navigator.clipboard.writeText(generatedScript)} style={{
-                    background: 'rgba(255, 255, 255, 0.2)', border: 'none', color: '#fff',
-                    padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem'
-                  }}>📋 Copy</button>
-                )}
-              </div>
-              <textarea value={generatedScript} readOnly style={{
-                width: '100%', height: '200px', background: 'rgba(0, 0, 0, 0.2)',
-                border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px',
-                padding: '10px', color: '#fff', fontSize: '12px', fontFamily: 'monospace'
-              }} />
-            </div>
+            if not cadquery_object or not isinstance(cadquery_object, (cq.Workplane, cq.Shape)):
+                raise ValueError("Script did not produce a valid CadQuery object.")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Script execution failed: {str(e)}")
+        
+        # Export STL
+        output_stl_path = os.path.join(TEMP_UPLOAD_DIR, "output_from_prompt.stl")
+        try:
+            cq.exporters.export(cadquery_object, output_stl_path)
             
-            <div style={{ background: 'rgba(255, 255, 255, 0.1)', borderRadius: '8px', padding: '20px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                <h3 style={{ margin: 0 }}>🎯 3D Preview</h3>
-                {modelData && (
-                  <button onClick={downloadSTL} style={{
-                    background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', border: 'none',
-                    color: 'white', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem'
-                  }}>📥 Download STL</button>
-                )}
-              </div>
-              {modelData ? <ModelPreview modelData={modelData} /> : (
-                <div style={{
-                  height: '250px', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '8px',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  border: '2px dashed rgba(255, 255, 255, 0.2)', color: 'rgba(255, 255, 255, 0.6)'
-                }}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '2rem', marginBottom: '10px' }}>🎯</div>
-                    <div>Your 3D model will appear here</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+            with open(output_stl_path, "rb") as stl_file:
+                encoded_stl = base64.b64encode(stl_file.read()).decode('utf-8')
+            
+            return JSONResponse(
+                status_code=200, 
+                content={
+                    "script": generated_script, 
+                    "stl_data": encoded_stl,
+                    "prompt": prompt_text
+                }
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"STL export failed: {str(e)}")
+        finally:
+            # Clean up STL file
+            if os.path.exists(output_stl_path):
+                try:
+                    os.remove(output_stl_path)
+                except Exception as e:
+                    print(f"Error cleaning up STL file: {e}")
 
-        {/* Drawing Results */}
-        {Object.keys(generatedDrawings).length > 0 && activeTab === 'drawings' && (
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h3>📐 Generated Drawings</h3>
-              <button onClick={downloadDrawings} style={{
-                background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', border: 'none',
-                color: 'white', padding: '10px 20px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600'
-              }}>📥 Download All</button>
-            </div>
-            <div style={{
-              display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px'
-            }}>
-              {Object.entries(generatedDrawings).map(([viewName, drawingData]) => (
-                <div key={viewName} style={{
-                  background: 'rgba(255, 255, 255, 0.1)', borderRadius: '8px', overflow: 'hidden'
-                }}>
-                  <div style={{
-                    background: 'rgba(255, 255, 255, 0.1)', padding: '15px',
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.1)'
-                  }}>
-                    <h4 style={{ margin: 0 }}>
-                      {drawingViews.find(v => v.id === viewName)?.icon} {drawingViews.find(v => v.id === viewName)?.name}
-                    </h4>
-                  </div>
-                  <div style={{ padding: '20px', background: '#fff', minHeight: '200px' }}>
-                    <div dangerouslySetInnerHTML={{ __html: atob(drawingData) }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </main>
-    </div>
-  );
-}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
-export default App;
+@app.post("/generate-drawings")
+async def generate_drawings(
+    file: UploadFile = File(...),
+    views: str = Form(...),
+    scale: str = Form("1:1"),
+    format: str = Form("svg")
+):
+    """
+    Generate technical drawings from STL file
+    """
+    try:
+        # Parse the views parameter
+        import json
+        selected_views = json.loads(views)
+        
+        # For now, return mock SVG drawings
+        # TODO: Implement actual STL to 2D projection
+        drawings = {}
+        
+        for view in selected_views:
+            # Create a simple SVG drawing for each view
+            svg_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<svg width="400" height="300" xmlns="http://www.w3.org/2000/svg">
+    <rect width="400" height="300" fill="#f8f9fa" stroke="#dee2e6" stroke-width="2"/>
+    <text x="200" y="50" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#343a40">
+        {view.title()} View
+    </text>
+    <text x="200" y="80" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#6c757d">
+        Scale: {scale}
+    </text>
+    
+    <!-- Simple geometric shape representing the object -->
+    <g transform="translate(200,150)">
+        <rect x="-50" y="-30" width="100" height="60" fill="none" stroke="#007bff" stroke-width="2"/>
+        <circle cx="0" cy="0" r="15" fill="none" stroke="#007bff" stroke-width="2"/>
+        <line x1="-60" y1="-40" x2="60" y2="-40" stroke="#28a745" stroke-width="1"/>
+        <line x1="-60" y1="40" x2="60" y2="40" stroke="#28a745" stroke-width="1"/>
+        <text x="0" y="-45" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#28a745">100mm</text>
+    </g>
+    
+    <text x="200" y="280" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#6c757d">
+        Generated by RasterShape AI
+    </text>
+</svg>"""
+            
+            # Convert to base64
+            drawings[view] = base64.b64encode(svg_content.encode()).decode()
+        
+        return {
+            "drawings": drawings,
+            "status": "success",
+            "message": f"Generated {len(drawings)} technical drawings"
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid views JSON format")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Drawing generation failed: {str(e)}")
+
+# Helper functions for actual drawing generation (for future implementation)
+def generate_front_view(stl_content, scale):
+    """Generate front view SVG from STL - Future implementation"""
+    # TODO: Implement actual STL mesh processing
+    # 1. Parse STL mesh using numpy-stl
+    # 2. Project vertices to XY plane
+    # 3. Create 2D outline using computational geometry
+    # 4. Generate SVG with proper dimensions and annotations
+    pass
+
+def generate_side_view(stl_content, scale):
+    """Generate side view SVG from STL - Future implementation"""
+    # TODO: Similar to front view but YZ projection
+    pass
+
+def generate_top_view(stl_content, scale):
+    """Generate top view SVG from STL - Future implementation"""
+    # TODO: Similar to front view but XZ projection
+    pass
+
+def generate_isometric_view(stl_content, scale):
+    """Generate isometric view SVG from STL - Future implementation"""
+    # TODO: 3D isometric projection with proper angles
+    pass
+
+# CRITICAL FIX: Use $PORT environment variable
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
