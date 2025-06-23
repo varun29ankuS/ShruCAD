@@ -44,7 +44,9 @@ origins = [
     "http://localhost:3000",
     "http://localhost:3001",
     "http://localhost:5173",
-    "https://forgeai-frontend-bng1.vercel.app/",  # Add your actual frontend domain
+    "https://forgeai-frontend-bng1.vercel.app",
+    "https://forgeai-frontend-bng1.vercel.app",
+    "https://www.forgeai-frontend-bng1.vercel.app"  # Add your actual frontend domain
     "*"  # Remove this in production and specify exact domains
 ]
 
