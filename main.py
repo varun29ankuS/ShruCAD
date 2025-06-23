@@ -296,6 +296,84 @@ async def generate_from_prompt(request_data: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
+from fastapi import FastAPI, UploadFile, File, Form
+import base64
+
+@app.post("/generate-drawings")
+async def generate_drawings(
+    file: UploadFile = File(...),
+    views: str = Form(...),
+    scale: str = Form("1:1"),
+    format: str = Form("svg")
+):
+    """
+    Generate technical drawings from STL file
+    
+    Args:
+        file: STL file upload
+        views: JSON string of selected views ["front", "side", "top", "isometric"]
+        scale: Drawing scale (1:1, 1:2, etc.)
+        format: Output format (svg, png, pdf, dxf)
+    
+    Returns:
+        {"drawings": {"front": "base64_data", "side": "base64_data", ...}}
+    """
+    
+    # 1. Save uploaded STL file
+    stl_content = await file.read()
+    
+    # 2. Parse STL and extract geometry
+    # You can use libraries like:
+    # - numpy-stl: for STL processing
+    # - matplotlib: for 2D projections
+    # - svgwrite: for SVG generation
+    # - FreeCAD: for advanced CAD operations
+    
+    # 3. Generate projections for each requested view
+    import json
+    selected_views = json.loads(views)
+    
+    drawings = {}
+    for view in selected_views:
+        if view == "front":
+            # Generate front view (XY projection)
+            svg_content = generate_front_view(stl_content, scale)
+        elif view == "side":
+            # Generate side view (YZ projection) 
+            svg_content = generate_side_view(stl_content, scale)
+        elif view == "top":
+            # Generate top view (XZ projection)
+            svg_content = generate_top_view(stl_content, scale)
+        elif view == "isometric":
+            # Generate isometric projection
+            svg_content = generate_isometric_view(stl_content, scale)
+        
+        # Convert to base64
+        drawings[view] = base64.b64encode(svg_content.encode()).decode()
+    
+    return {"drawings": drawings}
+
+def generate_front_view(stl_content, scale):
+    """Generate front view SVG from STL"""
+    # Implementation needed:
+    # 1. Parse STL mesh
+    # 2. Project vertices to XY plane
+    # 3. Create 2D outline
+    # 4. Generate SVG with dimensions
+    pass
+
+def generate_side_view(stl_content, scale):
+    """Generate side view SVG from STL"""
+    pass
+
+def generate_top_view(stl_content, scale):
+    """Generate top view SVG from STL"""
+    pass
+
+def generate_isometric_view(stl_content, scale):
+    """Generate isometric view SVG from STL"""
+    pass
+
 # CRITICAL FIX: Use $PORT environment variable
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
