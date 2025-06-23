@@ -1,13 +1,21 @@
-# requirements.txt
-fastapi
-uvicorn
-gunicorn
-python-multipart
-google-generativeai
-cadquery==2.3.1
+# Minimal requirements.txt for Render Free Tier
+# Use this if you're getting memory errors during build
+
+# Core web framework only
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+
+# AI (essential)
+google-generativeai==0.3.2
+
+# Minimal dependencies
+pydantic==2.5.0
 numpy==1.26.4
-opencv-python-headless
-easyocr
-numpy-stl==3.0.1
-matplotlib==3.7.1
-svgwrite==1.4.3
+
+# Optional: Add these one by one if needed
+# cadquery==2.3.1
+# opencv-python-headless==4.8.1.78  
+# easyocr==1.7.0
+# matplotlib==3.7.1
+# svgwrite==1.4.3
